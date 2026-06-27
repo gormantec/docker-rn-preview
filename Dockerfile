@@ -1,10 +1,7 @@
 # Docker RN Preview — Per-user Expo live preview container
 
-FROM node:20-alpine
+FROM node:20-slim
 WORKDIR /usr/src/app
-
-# Install bash for startup script
-RUN apk add --no-cache bash curl
 
 # Pre-install Expo template with all deps (shared across users at build time)
 RUN mkdir -p /expo-template
