@@ -2,16 +2,18 @@
 # start-preview.sh — Boot script for per-user Expo preview container
 #
 # Mounted volume: /workspace (NAS per-user dir, shared with designer container)
-# The designer writes App.tsx, screens/, etc. to /workspace
+# The designer writes App.tsx, screens/, etc. to /workspace/{PREVIEW_USER_HASH}
 # Expo watches these files and hot-reloads on change
 
 set -e
 
-WORKSPACE=/workspace
+USER_HASH=${PREVIEW_USER_HASH:-default}
+WORKSPACE=/workspace/$USER_HASH/current
 TEMPLATE=/expo-template
 PORT=${PORT:-19006}
 
 echo "[rn-preview] Starting Expo preview on port $PORT"
+echo "[rn-preview] User hash: $USER_HASH"
 echo "[rn-preview] Workspace: $WORKSPACE"
 
 # Ensure workspace exists
