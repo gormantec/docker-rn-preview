@@ -78,4 +78,4 @@ echo "[rn-preview] Starting Expo dev server..."
 cd "$WORKSPACE"
 
 # Start Expo with file watcher — hot-reloads on any file change
-exec npx expo start --web --non-interactive --host 0.0.0.0 --port "$PORT"
+exec npx expo start --web --non-interactive --host lan --port "$PORT"
