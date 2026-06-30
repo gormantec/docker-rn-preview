@@ -16,6 +16,12 @@ RUN npm init -y && npm install \
     @react-navigation/native@^7.1.0 \
     @react-navigation/native-stack@^7.3.0
 
+# Dereference all .bin/ symlinks in node_modules so they survive a copy to CIFS/SMB volumes.
+# CIFS doesn't support symlinks, so npx expo breaks when .bin/expo is a dangling symlink.
+# cp -rL copies actual file content instead of symlinks. We deref in a temp dir
+# and swap back to keep a single clean copy.
+RUN cp -rL node_modules node_modules_nosym && rm -rf node_modules && mv node_modules_nosym node_modules
+
 # Workspace will be mounted at runtime: /workspace → NAS per-user dir
 WORKDIR /usr/src/app
 RUN mkdir -p /workspace

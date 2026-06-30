@@ -19,11 +19,13 @@ echo "[rn-preview] Workspace: $WORKSPACE"
 # Ensure workspace exists
 mkdir -p "$WORKSPACE"
 
-# Copy template deps if workspace doesn't have node_modules yet
-if [ ! -d "$WORKSPACE/node_modules" ]; then
-  echo "[rn-preview] First boot: copying template deps..."
+# Copy template deps if workspace doesn't have them yet (or was corrupted by previous CIFS symlink failure)
+if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ]; then
+  echo "[rn-preview] First boot: copying template deps (symlinks pre-dereferenced for CIFS)..."
+  rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
+  echo "[rn-preview] node_modules ready."
 fi
 
 # Write placeholder app if no App.tsx exists
@@ -77,5 +79,7 @@ fi
 echo "[rn-preview] Starting Expo dev server..."
 cd "$WORKSPACE"
 
+# CI=1 replaces the deprecated --non-interactive flag in Expo 52+
+export CI=1
 # Start Expo with file watcher — hot-reloads on any file change
-exec npx expo start --web --non-interactive --host lan --port "$PORT"
+exec npx expo start --web --host lan --port "$PORT"
