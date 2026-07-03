@@ -19,10 +19,10 @@ echo "[rn-preview] Workspace: $WORKSPACE"
 # Ensure workspace exists
 mkdir -p "$WORKSPACE"
 
-# Copy template deps if workspace doesn't have them yet, or if the Expo web runtime is missing.
-# This keeps long-lived workspaces from getting stuck on older dependency trees.
+# Copy template deps if workspace doesn't have them yet, or if key packages are missing.
+# node_modules is on a local Docker volume (not NAS), so cp -r is fast here.
 if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modules/@expo/metro-runtime" ] || [ ! -d "$WORKSPACE/node_modules/expo-asset" ]; then
-  echo "[rn-preview] Refreshing template deps (symlinks pre-dereferenced for CIFS)..."
+  echo "[rn-preview] Copying template deps to workspace node_modules (local Docker volume — fast)..."
   rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
