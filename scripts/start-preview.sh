@@ -21,7 +21,7 @@ mkdir -p "$WORKSPACE"
 
 # Copy template deps if workspace doesn't have them yet, or if the Expo web runtime is missing.
 # This keeps long-lived workspaces from getting stuck on older dependency trees.
-if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modules/@expo/metro-runtime" ]; then
+if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modules/@expo/metro-runtime" ] || [ ! -d "$WORKSPACE/node_modules/expo-asset" ]; then
   echo "[rn-preview] Refreshing template deps (symlinks pre-dereferenced for CIFS)..."
   rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"

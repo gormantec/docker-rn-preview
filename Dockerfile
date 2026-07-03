@@ -8,6 +8,7 @@ RUN mkdir -p /expo-template
 WORKDIR /expo-template
 RUN npm init -y && npm install \
     expo@~52.0.0 \
+    expo-asset@~11.0.0 \
     react@18.3.1 \
     react-native@0.76.7 \
     react-native-web@~0.19.13 \
