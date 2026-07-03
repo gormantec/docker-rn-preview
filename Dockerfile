@@ -11,6 +11,7 @@ RUN npm init -y && npm install \
     react@18.3.1 \
     react-native@0.76.7 \
     react-native-web@~0.19.13 \
+    @expo/metro-runtime@~4.0.1 \
     react-native-safe-area-context@~5.0.0 \
     react-native-screens@~4.10.0 \
     @react-navigation/native@^7.1.0 \
