@@ -19,9 +19,10 @@ echo "[rn-preview] Workspace: $WORKSPACE"
 # Ensure workspace exists
 mkdir -p "$WORKSPACE"
 
-# Copy template deps if workspace doesn't have them yet (or was corrupted by previous CIFS symlink failure)
-if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ]; then
-  echo "[rn-preview] First boot: copying template deps (symlinks pre-dereferenced for CIFS)..."
+# Copy template deps if workspace doesn't have them yet, or if the Expo web runtime is missing.
+# This keeps long-lived workspaces from getting stuck on older dependency trees.
+if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modules/@expo/metro-runtime" ]; then
+  echo "[rn-preview] Refreshing template deps (symlinks pre-dereferenced for CIFS)..."
   rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
