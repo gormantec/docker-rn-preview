@@ -16,7 +16,9 @@ RUN npm init -y && npm install \
     react-native-safe-area-context@~5.0.0 \
     react-native-screens@~4.10.0 \
     @react-navigation/native@^7.1.0 \
-    @react-navigation/native-stack@^7.3.0
+    @react-navigation/native-stack@^7.3.0 \
+    typescript@~5.3.3 \
+    @types/react@~18.3.12
 
 # Dereference all .bin/ symlinks in node_modules so they survive a copy to CIFS/SMB volumes.
 # CIFS doesn't support symlinks, so npx expo breaks when .bin/expo is a dangling symlink.

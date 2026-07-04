@@ -47,6 +47,17 @@ if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modul
   echo "[rn-preview] node_modules ready."
 fi
 
+# ── Auto-detect TypeScript: if any .tsx files exist but typescript is missing, install it ──
+if ls "$WORKSPACE"/*.tsx "$WORKSPACE"/**/*.tsx "$WORKSPACE"/**/*.ts 2>/dev/null | head -1 | grep -q .; then
+  if [ ! -f "$WORKSPACE/node_modules/.bin/tsc" ] && [ ! -d "$WORKSPACE/node_modules/typescript" ]; then
+    echo "[rn-preview] $(date -Iseconds) Detected .tsx/.ts files but no typescript — installing..." | tee -a "$LOGDIR/preview.log"
+    cd "$WORKSPACE"
+    npm install --prefer-offline --no-audit --no-fund typescript@~5.3.3 @types/react@~18.3.12 >> "$LOGDIR/preview.log" 2>&1 && \
+      echo "[rn-preview] $(date -Iseconds) typescript installed OK" | tee -a "$LOGDIR/preview.log" || \
+      echo "[rn-preview] $(date -Iseconds) typescript install FAILED" | tee -a "$LOGDIR/preview.log"
+  fi
+fi
+
 # ── Write placeholder app if no App.tsx exists ──
 if [ ! -f "$WORKSPACE/App.tsx" ]; then
   echo "[rn-preview] Writing placeholder App.tsx..."
