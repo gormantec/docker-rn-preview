@@ -9,8 +9,7 @@
 #   1. Watches package.json → auto-runs npm install on changes
 #   2. Watches commands/ dir → executes .sh scripts (for agent-driven fixes)
 #   3. Writes all Expo output to logs/preview.log on NAS for agent monitoring
-
-set -e
+#   4. Crash loop detection — prevents infinite restart cycles
 
 USER_HASH=${PREVIEW_USER_HASH:-default}
 WORKSPACE=/workspace/$USER_HASH/current
@@ -19,6 +18,7 @@ CMDDIR=/workspace/$USER_HASH/commands
 CMDOUTDIR=/workspace/$USER_HASH/commands/output
 TEMPLATE=/expo-template
 PORT=${PORT:-19006}
+CRASH_FILE=/workspace/$USER_HASH/.crash-state
 
 echo "[rn-preview] Starting Expo preview on port $PORT"
 echo "[rn-preview] User hash: $USER_HASH"
@@ -26,6 +26,58 @@ echo "[rn-preview] Workspace: $WORKSPACE"
 
 # Ensure directories exist
 mkdir -p "$WORKSPACE" "$LOGDIR" "$CMDDIR" "$CMDOUTDIR"
+
+# ═══════════════════════════════════════════════════════════════
+# CRASH LOOP DETECTION — prevent infinite restart cycles
+# ═══════════════════════════════════════════════════════════════
+CRASH_WINDOW_SEC=300   # 5 minute window
+MAX_CRASHES=5           # max crashes in that window before giving up
+
+now=$(date +%s)
+crash_count=0
+crash_first=0
+
+if [ -f "$CRASH_FILE" ]; then
+  read -r crash_first crash_count < "$CRASH_FILE" 2>/dev/null || true
+  crash_first=${crash_first:-0}
+  crash_count=${crash_count:-0}
+fi
+
+# If first crash was within the window, increment. Otherwise reset.
+if [ "$crash_first" -gt 0 ] && [ $((now - crash_first)) -lt $CRASH_WINDOW_SEC ]; then
+  crash_count=$((crash_count + 1))
+else
+  crash_first=$now
+  crash_count=1
+fi
+
+echo "$crash_first $crash_count" > "$CRASH_FILE"
+
+if [ "$crash_count" -gt "$MAX_CRASHES" ]; then
+  echo "[rn-preview] ❌ CRASH LOOP DETECTED: $crash_count crashes in $(( (now - crash_first) / 60 ))min" | tee -a "$LOGDIR/preview.log"
+  echo "[rn-preview] Last crash was within the past $(( (now - crash_first) / 60 )) minutes. Max allowed: $MAX_CRASHES crashes in $((CRASH_WINDOW_SEC/60)) minutes."
+  echo "[rn-preview] Writing SOS to log and sleeping indefinitely so a human/AI can intervene."
+
+  # Write SOS to log for the log monitor / AI agent to detect
+  cat >> "$LOGDIR/preview.log" << SOSEOF
+╔══════════════════════════════════════════════════════════════╗
+║  SOS: Preview container crash loop detected!               ║
+║  User: $USER_HASH                                          ║
+║  Crashes: $crash_count in $(( (now - crash_first) / 60 ))min                         ║
+║  Time: $(date -Iseconds)                                   ║
+║  Action needed: diagnose logs/preview.log, fix root cause, ║
+║  then delete $CRASH_FILE to allow restart.                 ║
+╚══════════════════════════════════════════════════════════════╝
+SOSEOF
+
+  # Sleep indefinitely — Swarm will NOT restart us because we exit 0 eventually?
+  # Actually exit 1 so Swarm knows we're unhealthy, but with a long delay first
+  # so the log monitor has time to detect the SOS and fire the AI agent.
+  sleep 120
+  exit 1
+fi
+
+echo "[rn-preview] Crash count: $crash_count/$MAX_CRASHES in window (first crash: $(date -d @$crash_first -Iseconds 2>/dev/null || echo "$crash_first"))" | tee -a "$LOGDIR/preview.log"
 
 # ── Helper: run npm install with output to log ──
 run_npm_install() {
