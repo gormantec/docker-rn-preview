@@ -98,18 +98,16 @@ if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modul
   # Fix the "main" field — npm init sets it to index.js, Expo needs expo/AppEntry.js
   node -e "const p=require('$WORKSPACE/package.json');p.main='node_modules/expo/AppEntry.js';require('fs').writeFileSync('$WORKSPACE/package.json',JSON.stringify(p,null,2))"
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
-  echo "[rn-preview] node_modules ready."
-fi
-
-# ── Auto-detect TypeScript: if any .tsx files exist but typescript is missing, install it ──
-if ls "$WORKSPACE"/*.tsx "$WORKSPACE"/**/*.tsx "$WORKSPACE"/**/*.ts 2>/dev/null | head -1 | grep -q .; then
-  if [ ! -f "$WORKSPACE/node_modules/.bin/tsc" ] && [ ! -d "$WORKSPACE/node_modules/typescript" ]; then
-    echo "[rn-preview] $(date -Iseconds) Detected .tsx/.ts files but no typescript — installing..." | tee -a "$LOGDIR/preview.log"
-    cd "$WORKSPACE"
-    npm install --prefer-offline --no-audit --no-fund typescript@~5.3.3 @types/react@~18.3.12 >> "$LOGDIR/preview.log" 2>&1 && \
-      echo "[rn-preview] $(date -Iseconds) typescript installed OK" | tee -a "$LOGDIR/preview.log" || \
-      echo "[rn-preview] $(date -Iseconds) typescript install FAILED" | tee -a "$LOGDIR/preview.log"
+  # Ensure typescript is available in workspace (CIFS may lose .bin/ symlinks)
+  if [ ! -f "$WORKSPACE/node_modules/.bin/tsc" ] && [ -d "$TEMPLATE/node_modules/typescript" ]; then
+    echo "[rn-preview] Copying typescript from template..." | tee -a "$LOGDIR/preview.log"
+    mkdir -p "$WORKSPACE/node_modules/.bin" "$WORKSPACE/node_modules/@types" 2>/dev/null || true
+    cp -r "$TEMPLATE/node_modules/typescript" "$WORKSPACE/node_modules/" 2>/dev/null || true
+    cp -r "$TEMPLATE/node_modules/@types/react" "$WORKSPACE/node_modules/@types/" 2>/dev/null || true
+    cp "$TEMPLATE/node_modules/.bin/tsc" "$WORKSPACE/node_modules/.bin/tsc" 2>/dev/null || true
+    cp "$TEMPLATE/node_modules/.bin/tsserver" "$WORKSPACE/node_modules/.bin/tsserver" 2>/dev/null || true
   fi
+  echo "[rn-preview] node_modules ready."
 fi
 
 # ── Write placeholder app if no App.tsx exists ──
