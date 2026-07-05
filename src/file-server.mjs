@@ -19,14 +19,15 @@
  */
 
 import { createServer } from 'http';
+import http from 'http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, watchFile, cpSync, copyFileSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { execSync, spawn } from 'child_process';
 
 const PORT = parseInt(process.env.FILE_API_PORT || '9091', 10);
 const WORKSPACE_BASE = process.env.WORKSPACE_BASE || '/workspace';
-const TEMPLATE = '/workspace/my-project';  // Pre-built default project from Dockerfile
-const PREVIEW_PORT = process.env.PREVIEW_PORT || '19006';
+const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT || '19006', 10);
+const EXPO_INTERNAL_PORT = 19007;  // Expo runs here, file-server proxies on PREVIEW_PORT
 
 let currentProject = 'my-project';
 let WORKSPACE = join(WORKSPACE_BASE, currentProject);
@@ -138,7 +139,9 @@ function startExpo() {
   }
 
   console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
-  expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', PREVIEW_PORT], {
+  const userHash = process.env.PREVIEW_USER_HASH || 'default';
+  const publicUrl = `/webapp/rn-pv-${userHash}`;
+  expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', String(EXPO_INTERNAL_PORT)], {
     cwd: WORKSPACE,
     stdio: 'inherit',
     env: { ...process.env, CI: 'true' },
@@ -335,4 +338,57 @@ startExpo();
 
 server.listen(PORT, () => {
   console.log(`[file-server] File API listening on port ${PORT}`);
+});
+
+// ── Reverse proxy on port 19006 → Expo on 19007 (rewrites absolute asset paths) ──
+const userHash = process.env.PREVIEW_USER_HASH || 'default';
+const basePath = `/webapp/rn-pv-${userHash}`;
+const proxyServer = createServer((req, res) => {
+  const proxyReq = http.request({
+    hostname: 'localhost', port: EXPO_INTERNAL_PORT,
+    path: req.url, method: req.method, headers: req.headers,
+  }, (proxyRes) => {
+    const ct = proxyRes.headers['content-type'] || '';
+    const isHtml = ct.includes('text/html');
+    const isJs = ct.includes('javascript') || ct.includes('ecmascript');
+    const isCss = ct.includes('text/css');
+
+    if (isHtml || isJs || isCss) {
+      let body = '';
+      proxyRes.on('data', (chunk) => { body += chunk.toString(); });
+      proxyRes.on('end', () => {
+        // Rewrite absolute paths: /assets/... → /webapp/rn-pv-{hash}/assets/...
+        // Skip paths already containing the basePath, and skip external URLs
+        if (isHtml) {
+          // Add <base> tag + rewrite src/href attributes
+          body = body.replace('<head>', `<head><base href="${basePath}/">`);
+          body = body.replace(/(src|href)=["']\/((?!(?:webapp|cdn|http|\/\/))[^"']*)["']/g,
+            (m, attr, path) => `${attr}="${basePath}/${path}"`);
+        }
+        if (isJs) {
+          // Rewrite asset references in JS bundles
+          body = body.replace(/(["'`])\/((?!webapp\/|cdn|http|\/\/)[^"'\`]+\.[a-z]{2,4}(\?[^"'\`]*)?)(["'`])/g,
+            (m, q1, path, q2) => `${q1}${basePath}/${path}${q2 || q1}`);
+        }
+        if (isCss) {
+          // Rewrite url() references in CSS
+          body = body.replace(/url\(["']?\/((?!webapp\/|cdn|http)[^"')]+)["']?\)/g,
+            (m, path) => `url("${basePath}/${path}")`);
+        }
+        const headers = { ...proxyRes.headers };
+        delete headers['content-length'];
+        res.writeHead(proxyRes.statusCode, headers);
+        res.end(body);
+      });
+    } else {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+    }
+  });
+  proxyReq.on('error', () => { res.writeHead(502); res.end('Expo not ready'); });
+  if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(proxyReq);
+  else proxyReq.end();
+});
+proxyServer.listen(PREVIEW_PORT, () => {
+  console.log(`[file-server] Expo proxy listening on port ${PREVIEW_PORT} → ${EXPO_INTERNAL_PORT}`);
 });
