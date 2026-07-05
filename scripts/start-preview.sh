@@ -95,6 +95,8 @@ if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modul
   echo "[rn-preview] Copying template deps to workspace node_modules (local Docker volume — fast)..."
   rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"
+  # Fix the "main" field — npm init sets it to index.js, Expo needs expo/AppEntry.js
+  node -e "const p=require('$WORKSPACE/package.json');p.main='node_modules/expo/AppEntry.js';require('fs').writeFileSync('$WORKSPACE/package.json',JSON.stringify(p,null,2))"
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
   echo "[rn-preview] node_modules ready."
 fi
