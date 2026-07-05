@@ -26,8 +26,9 @@ import { execSync, spawn } from 'child_process';
 
 const PORT = parseInt(process.env.FILE_API_PORT || '9091', 10);
 const WORKSPACE_BASE = process.env.WORKSPACE_BASE || '/workspace';
+const TEMPLATE = '/workspace/my-project';  // Pre-built default from Dockerfile
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT || '19006', 10);
-const EXPO_INTERNAL_PORT = 19007;  // Expo runs here, file-server proxies on PREVIEW_PORT
+const EXPO_INTERNAL_PORT = 19007;
 
 let currentProject = 'my-project';
 let WORKSPACE = join(WORKSPACE_BASE, currentProject);
@@ -350,28 +351,18 @@ const proxyServer = createServer((req, res) => {
   }, (proxyRes) => {
     const ct = proxyRes.headers['content-type'] || '';
     const isHtml = ct.includes('text/html');
-    const isJs = ct.includes('javascript') || ct.includes('ecmascript');
     const isCss = ct.includes('text/css');
 
-    if (isHtml || isJs || isCss) {
+    if (isHtml || isCss) {
       let body = '';
       proxyRes.on('data', (chunk) => { body += chunk.toString(); });
       proxyRes.on('end', () => {
-        // Rewrite absolute paths: /assets/... → /webapp/rn-pv-{hash}/assets/...
-        // Skip paths already containing the basePath, and skip external URLs
         if (isHtml) {
-          // Add <base> tag + rewrite src/href attributes
           body = body.replace('<head>', `<head><base href="${basePath}/">`);
           body = body.replace(/(src|href)=["']\/((?!(?:webapp|cdn|http|\/\/))[^"']*)["']/g,
             (m, attr, path) => `${attr}="${basePath}/${path}"`);
         }
-        if (isJs) {
-          // Rewrite asset references in JS bundles
-          body = body.replace(/(["'`])\/((?!webapp\/|cdn|http|\/\/)[^"'\`]+\.[a-z]{2,4}(\?[^"'\`]*)?)(["'`])/g,
-            (m, q1, path, q2) => `${q1}${basePath}/${path}${q2 || q1}`);
-        }
         if (isCss) {
-          // Rewrite url() references in CSS
           body = body.replace(/url\(["']?\/((?!webapp\/|cdn|http)[^"')]+)["']?\)/g,
             (m, path) => `url("${basePath}/${path}")`);
         }
