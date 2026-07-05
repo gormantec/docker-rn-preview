@@ -1,26 +1,38 @@
 /**
  * file-server.mjs — Lightweight file API for per-user Expo preview.
  *
- * Replaces NAS-mounted workspace with a clean API:
- *   POST /api/files/write  { path, content }  — write a file
- *   GET  /api/files/read?path=...              — read a file
- *   GET  /api/files/list?dir=...               — list directory
- *   POST /api/build                            — npm install + expo start
- *   GET  /api/health                            — health check
+ * Projects are created via npx create-expo-app@latest for a valid Expo base.
+ * The designer pushes code changes into the active project via the file API.
+ *
+ * Endpoints:
+ *   GET  /api/health                              — health + current project
+ *   GET  /api/projects/current                     — { project, path }
+ *   POST /api/projects/switch  { name }            — create/switch project, restart Expo
+ *   POST /api/files/write  { path, content }       — write file (relative to project)
+ *   GET  /api/files/read?path=...                  — read file
+ *   GET  /api/files/list?dir=...                   — list directory
+ *   POST /api/files/mkdir  { path }                — create directory
+ *   DELETE /api/files/delete?path=...              — delete file
+ *   POST /api/build                                — npm install + restart Expo
+ *   POST /api/exec  { script }                     — execute shell script
+ *   GET  /api/logs                                  — preview logs
  */
 
 import { createServer } from 'http';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, watchFile } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, watchFile, cpSync, copyFileSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { execSync, spawn } from 'child_process';
 
 const PORT = parseInt(process.env.FILE_API_PORT || '9091', 10);
-const WORKSPACE = process.env.WORKSPACE || '/workspace/current';
-const TEMPLATE = '/expo-template';
+const WORKSPACE_BASE = process.env.WORKSPACE_BASE || '/workspace';
+const TEMPLATE = '/workspace/my-project';  // Pre-built default project from Dockerfile
 const PREVIEW_PORT = process.env.PREVIEW_PORT || '19006';
 
-// Ensure workspace exists
-if (!existsSync(WORKSPACE)) mkdirSync(WORKSPACE, { recursive: true });
+let currentProject = 'my-project';
+let WORKSPACE = join(WORKSPACE_BASE, currentProject);
+
+// Ensure base exists
+if (!existsSync(WORKSPACE_BASE)) mkdirSync(WORKSPACE_BASE, { recursive: true });
 
 // ── Security: prevent path traversal ──
 function safePath(requestedPath) {
@@ -31,65 +43,93 @@ function safePath(requestedPath) {
   return resolved;
 }
 
-// ── Copy template node_modules and create default project ──
-function setupDefaultProject() {
-  // Copy node_modules
-  if (!existsSync(join(WORKSPACE, 'node_modules', 'expo'))) {
-    console.log('[file-server] Copying template node_modules...');
-    execSync(`cp -r ${TEMPLATE}/node_modules ${WORKSPACE}/node_modules`, { stdio: 'pipe' });
+// ── Create project: copy from pre-built template if needed ──
+function createProject(name) {
+  const projectPath = join(WORKSPACE_BASE, name);
+
+  // Already has node_modules? Reuse.
+  if (existsSync(join(projectPath, 'node_modules', 'expo'))) {
+    console.log(`[file-server] Project "${name}" ready (existing node_modules).`);
+    return projectPath;
   }
 
-  // Write package.json
-  const pkg = JSON.stringify({
-    name: 'preview', version: '0.0.1', private: true,
-    main: 'node_modules/expo/AppEntry.js',
-    scripts: { start: 'expo start --web', web: 'expo start --web' },
-    dependencies: { expo: '~52.0.0', react: '18.3.1', 'react-native': '0.76.7', 'react-native-web': '~0.19.13', typescript: '~5.3.3', '@types/react': '~18.3.12' },
-  }, null, 2);
-  writeFileSync(join(WORKSPACE, 'package.json'), pkg);
+  console.log(`[file-server] Setting up project "${name}"...`);
+  if (!existsSync(projectPath)) mkdirSync(projectPath, { recursive: true });
 
-  // Write app.json
-  writeFileSync(join(WORKSPACE, 'app.json'), JSON.stringify({
-    expo: { name: 'Preview', slug: 'preview', version: '0.0.1', platforms: ['web'], web: { bundler: 'metro' } },
-  }, null, 2));
+  // Copy node_modules from pre-built default project (fast, local fs)
+  if (existsSync(join(TEMPLATE, 'node_modules', 'expo')) && !existsSync(join(projectPath, 'node_modules'))) {
+    try {
+      cpSync(join(TEMPLATE, 'node_modules'), join(projectPath, 'node_modules'), { recursive: true });
+      console.log(`[file-server] Copied node_modules from template.`);
+    } catch (err) {
+      console.error(`[file-server] node_modules copy failed: ${err.message}`);
+    }
+  }
 
-  // Write tsconfig.json for TypeScript
-  writeFileSync(join(WORKSPACE, 'tsconfig.json'), JSON.stringify({
-    extends: 'expo/tsconfig.base',
-    compilerOptions: { strict: true },
-  }, null, 2));
-
-  // Write default App.tsx (white screen, replaced by designer)
-  writeFileSync(join(WORKSPACE, 'App.tsx'), `import React from 'react';
-import { View, StyleSheet, SafeAreaView, Text } from 'react-native';
-
+  // Write project skeleton files (app.json, tsconfig.json, App.tsx) if missing
+  // NOTE: Do NOT write package.json — the template already has a valid one with Expo entry point
+  if (!existsSync(join(projectPath, 'app.json'))) {
+    writeFileSync(join(projectPath, 'app.json'), JSON.stringify({
+      expo: { name, slug: name, version: '0.0.1', platforms: ['web'], web: { bundler: 'metro' } },
+    }, null, 2));
+  }
+  if (!existsSync(join(projectPath, 'tsconfig.json'))) {
+    writeFileSync(join(projectPath, 'tsconfig.json'), JSON.stringify({
+      extends: 'expo/tsconfig.base', compilerOptions: { strict: true },
+    }, null, 2));
+  }
+  if (!existsSync(join(projectPath, 'App.tsx'))) {
+    writeFileSync(join(projectPath, 'App.tsx'), `import React from 'react';
+import { View, Text, SafeAreaView, StyleSheet } from 'react-native';
 export default function App() {
-  return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.title}>Preview Ready</Text>
-        <Text style={styles.subtitle}>Build your app on the canvas to see it here.</Text>
-      </View>
-    </SafeAreaView>
-  );
+  return <SafeAreaView style={s.container}><View style={s.content}><Text style={s.title}>${name}</Text><Text style={s.sub}>Preview Ready</Text></View></SafeAreaView>;
+}
+const s = StyleSheet.create({
+  container: { flex:1, backgroundColor:'#fff' },
+  content: { flex:1, alignItems:'center', justifyContent:'center', padding:24 },
+  title: { fontSize:20, fontWeight:'600', color:'#16191f', marginBottom:8 },
+  sub: { fontSize:14, color:'#8d99a8', textAlign:'center' },
+});`);
+  }
+
+  console.log(`[file-server] Project "${name}" ready.`);
+  return projectPath;
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#ffffff' },
-  content: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  title: { fontSize: 20, fontWeight: '600', color: '#16191f', marginBottom: 8 },
-  subtitle: { fontSize: 14, color: '#8d99a8', textAlign: 'center' },
-});
-`);
+// ── Switch to a different project ──
+function switchProject(name) {
+  const safeName = (name || 'my-project')
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    || 'my-project';
 
-  console.log('[file-server] Default project ready.');
+  const projectPath = createProject(safeName);
+  currentProject = safeName;
+  WORKSPACE = projectPath;
+  console.log(`[file-server] Active project: "${currentProject}"`);
+
+  // Restart Expo with new project
+  if (expoProcess) { expoProcess.kill(); expoProcess = null; }
+  setTimeout(startExpo, 2000);
+
+  // Re-watch package.json on new project
+  try { watchFile(join(WORKSPACE, 'package.json'), watchPkgHandler); } catch {}
+
+  return { project: currentProject, path: WORKSPACE };
 }
 
 // ── Start Expo dev server ──
 let expoProcess = null;
 function startExpo() {
-  if (expoProcess) return;
-  console.log('[file-server] Starting Expo dev server...');
+  // Kill any existing process on the Expo port
+  try { execSync(`fuser -k ${PREVIEW_PORT}/tcp 2>/dev/null || true`, { timeout: 5000 }); } catch {}
+  
+  if (expoProcess) {
+    try { expoProcess.kill('SIGKILL'); } catch {}
+    expoProcess = null;
+  }
+  console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
   expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', PREVIEW_PORT], {
     cwd: WORKSPACE,
     stdio: 'inherit',
@@ -124,9 +164,22 @@ const server = createServer(async (req, res) => {
   const method = req.method.toUpperCase();
 
   try {
-    // Health
+    // ── Health ──
     if (method === 'GET' && url.pathname === '/api/health') {
-      return json(res, { ok: true, workspace: WORKSPACE });
+      return json(res, { ok: true, project: currentProject, workspace: WORKSPACE });
+    }
+
+    // ── Project management ──
+    if (method === 'GET' && url.pathname === '/api/projects/current') {
+      return json(res, { project: currentProject, path: WORKSPACE });
+    }
+
+    if (method === 'POST' && url.pathname === '/api/projects/switch') {
+      const body = await parseBody(req);
+      const { name } = body;
+      if (!name) return json(res, { error: 'name required' }, 400);
+      const result = switchProject(name);
+      return json(res, { ok: true, ...result });
     }
 
     // List directory
@@ -233,33 +286,35 @@ const server = createServer(async (req, res) => {
 
 // ── Watch package.json for dependency changes ──
 let npmInstallRunning = false;
+async function watchPkgHandler(curr, prev) {
+  if (curr.mtimeMs === prev.mtimeMs) return;
+  if (npmInstallRunning) return;
+  npmInstallRunning = true;
+  console.log('[file-server] package.json changed — running npm install...');
+  try {
+    execSync('npm install --legacy-peer-deps', { cwd: WORKSPACE, stdio: 'pipe' });
+    console.log('[file-server] npm install complete. Restarting Expo...');
+    if (expoProcess) { expoProcess.kill(); expoProcess = null; }
+    setTimeout(startExpo, 2000);
+  } catch (err) {
+    console.error('[file-server] npm install failed:', err.message);
+  } finally {
+    npmInstallRunning = false;
+  }
+}
+
 function watchPackageJson() {
-  const pkgPath = join(WORKSPACE, 'package.json');
-  watchFile(pkgPath, async (curr, prev) => {
-    if (curr.mtimeMs === prev.mtimeMs) return;
-    if (npmInstallRunning) return;
-    npmInstallRunning = true;
-    console.log('[file-server] package.json changed — running npm install...');
-    try {
-      execSync('npm install --legacy-peer-deps', { cwd: WORKSPACE, stdio: 'pipe' });
-      console.log('[file-server] npm install complete. Restarting Expo...');
-      // Restart Expo so Metro picks up any new modules
-      if (expoProcess) { expoProcess.kill(); expoProcess = null; }
-      setTimeout(startExpo, 2000);
-    } catch (err) {
-      console.error('[file-server] npm install failed:', err.message);
-    } finally {
-      npmInstallRunning = false;
-    }
-  });
+  watchFile(join(WORKSPACE, 'package.json'), watchPkgHandler);
   console.log('[file-server] Watching package.json for changes');
 }
 
-// ── Start ──
-setupDefaultProject();
+// ── Startup ──
+console.log(`[file-server] Creating default project "my-project"...`);
+createProject('my-project');
+console.log(`[file-server] Workspace: ${WORKSPACE}`);
 watchPackageJson();
 startExpo();
+
 server.listen(PORT, () => {
   console.log(`[file-server] File API listening on port ${PORT}`);
-  console.log(`[file-server] Workspace: ${WORKSPACE}`);
 });
