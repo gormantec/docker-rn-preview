@@ -95,8 +95,20 @@ if [ ! -f "$WORKSPACE/node_modules/.bin/expo" ] || [ ! -d "$WORKSPACE/node_modul
   echo "[rn-preview] Copying template deps to workspace node_modules (local Docker volume — fast)..."
   rm -rf "$WORKSPACE/node_modules" "$WORKSPACE/package.json" 2>/dev/null || true
   cp "$TEMPLATE/package.json" "$WORKSPACE/package.json"
-  # Fix the "main" field — npm init sets it to index.js, Expo needs expo/AppEntry.js
-  node -e "const p=require('$WORKSPACE/package.json');p.main='node_modules/expo/AppEntry.js';require('fs').writeFileSync('$WORKSPACE/package.json',JSON.stringify(p,null,2))"
+  # Fix the "main" field — Expo needs node_modules/expo/AppEntry.js
+  cat > "$WORKSPACE/package.json" << 'PKGJSON'
+{
+  "name": "preview",
+  "version": "0.0.1",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start --web",
+    "web": "expo start --web"
+  },
+  "dependencies": {}
+}
+PKGJSON
   cp -r "$TEMPLATE/node_modules" "$WORKSPACE/node_modules"
   # Ensure typescript is available in workspace (CIFS may lose .bin/ symlinks)
   if [ ! -f "$WORKSPACE/node_modules/.bin/tsc" ] && [ -d "$TEMPLATE/node_modules/typescript" ]; then
