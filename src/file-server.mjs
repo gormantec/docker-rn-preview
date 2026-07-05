@@ -105,30 +105,38 @@ function switchProject(name) {
     || 'my-project';
 
   const projectPath = createProject(safeName);
+
+  // Only restart Expo if the project actually changed
+  const changed = (safeName !== currentProject);
   currentProject = safeName;
   WORKSPACE = projectPath;
-  console.log(`[file-server] Active project: "${currentProject}"`);
+  console.log(`[file-server] Active project: "${currentProject}"${changed ? ' (changed)' : ' (unchanged)'}`);
 
-  // Restart Expo with new project
-  if (expoProcess) { expoProcess.kill(); expoProcess = null; }
-  setTimeout(startExpo, 2000);
-
-  // Re-watch package.json on new project
-  try { watchFile(join(WORKSPACE, 'package.json'), watchPkgHandler); } catch {}
-
-  return { project: currentProject, path: WORKSPACE };
+  if (changed) {
+    // Restart Expo with new project
+    if (expoProcess) { expoProcess.kill('SIGKILL'); expoProcess = null; }
+    setTimeout(startExpo, 2000);
+    // Re-watch package.json on new project
+    try { watchFile(join(WORKSPACE, 'package.json'), watchPkgHandler); } catch {}
+  }
 }
 
 // ── Start Expo dev server ──
 let expoProcess = null;
+let expoStarting = false;
 function startExpo() {
-  // Kill any existing process on the Expo port
-  try { execSync(`fuser -k ${PREVIEW_PORT}/tcp 2>/dev/null || true`, { timeout: 5000 }); } catch {}
-  
+  if (expoStarting) {
+    console.log('[file-server] Expo start already in progress, skipping.');
+    return;
+  }
+  expoStarting = true;
+
+  // Kill existing process if any
   if (expoProcess) {
     try { expoProcess.kill('SIGKILL'); } catch {}
     expoProcess = null;
   }
+
   console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
   expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', PREVIEW_PORT], {
     cwd: WORKSPACE,
@@ -136,10 +144,20 @@ function startExpo() {
     env: { ...process.env, CI: 'true' },
   });
   expoProcess.on('exit', (code) => {
-    console.log(`[file-server] Expo exited with code ${code}, restarting in 3s...`);
+    console.log(`[file-server] Expo exited with code ${code}.`);
     expoProcess = null;
-    setTimeout(startExpo, 3000);
+    // Only auto-restart on crashes (non-zero exit), not port-conflict clean exits
+    if (code !== 0 && code !== null) {
+      console.log('[file-server] Expo crashed — restarting in 5s...');
+      expoStarting = false;
+      setTimeout(startExpo, 5000);
+    } else {
+      expoStarting = false;
+    }
   });
+
+  // Mark start complete after a short delay (Expo is async)
+  setTimeout(() => { expoStarting = false; }, 5000);
 }
 
 // ── Request parsing ──
