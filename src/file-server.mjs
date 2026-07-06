@@ -68,6 +68,26 @@ function createProject(name) {
     }
   }
 
+  // Copy package.json from template if missing (Expo requires it at the project root)
+  if (!existsSync(join(projectPath, 'package.json')) && existsSync(join(TEMPLATE, 'package.json'))) {
+    try {
+      copyFileSync(join(TEMPLATE, 'package.json'), join(projectPath, 'package.json'));
+      console.log('[file-server] Copied package.json from template.');
+    } catch (err) {
+      console.error(`[file-server] package.json copy failed: ${err.message}`);
+    }
+  }
+
+  // Copy package.json from template if missing (needed for Expo to start)
+  if (!existsSync(join(projectPath, 'package.json')) && existsSync(join(TEMPLATE, 'package.json'))) {
+    try {
+      copyFileSync(join(TEMPLATE, 'package.json'), join(projectPath, 'package.json'));
+      console.log(`[file-server] Copied package.json from template.`);
+    } catch (err) {
+      console.error(`[file-server] package.json copy failed: ${err.message}`);
+    }
+  }
+
   // Write project skeleton files (app.json, tsconfig.json, App.tsx) if missing
   // NOTE: Do NOT write package.json — the template already has a valid one with Expo entry point
   if (!existsSync(join(projectPath, 'app.json'))) {
@@ -126,6 +146,8 @@ function switchProject(name) {
 // ── Start Expo dev server ──
 let expoProcess = null;
 let expoStarting = false;
+let expoRetries = 0;
+
 function startExpo() {
   if (expoStarting) {
     console.log('[file-server] Expo start already in progress, skipping.');
@@ -133,35 +155,42 @@ function startExpo() {
   }
   expoStarting = true;
 
-  // Kill existing process if any
+  // Kill existing process group (Metro children included)
   if (expoProcess) {
-    try { expoProcess.kill('SIGKILL'); } catch {}
+    try { process.kill(-expoProcess.pid, 'SIGKILL'); } catch {}
     expoProcess = null;
   }
 
   console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
-  const userHash = process.env.PREVIEW_USER_HASH || 'default';
-  const publicUrl = `/webapp/rn-pv-${userHash}`;
   expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', String(EXPO_INTERNAL_PORT)], {
     cwd: WORKSPACE,
     stdio: 'inherit',
-    env: { ...process.env, CI: 'true' },
+    env: {
+      ...process.env,
+      CI: 'true',                    // Prevent watch mode prompts
+      EXPO_NO_PORT_PROMPT: '1',      // Prevent "Use port 19008?" prompt
+      EXPO_NO_INTERACTIVE: '1',      // Extra guard against prompts
+    },
   });
   expoProcess.on('exit', (code) => {
     console.log(`[file-server] Expo exited with code ${code}.`);
     expoProcess = null;
-    // Only auto-restart on crashes (non-zero exit), not port-conflict clean exits
-    if (code !== 0 && code !== null) {
-      console.log('[file-server] Expo crashed — restarting in 5s...');
-      expoStarting = false;
+    expoStarting = false;
+    // Retry on port conflicts or crashes (but cap retries)
+    if (code !== 0 && expoRetries < 3) {
+      expoRetries++;
+      console.log(`[file-server] Expo restarting in 5s (retry ${expoRetries}/3)...`);
       setTimeout(startExpo, 5000);
+    } else if (code === 0) {
+      expoRetries = 0;
     } else {
-      expoStarting = false;
+      console.log(`[file-server] Expo failed after ${expoRetries} retries. Giving up.`);
+      expoRetries = 0;
     }
   });
 
-  // Mark start complete after a short delay (Expo is async)
-  setTimeout(() => { expoStarting = false; }, 5000);
+  // Mark start complete after Expo is likely up (but DON'T reset retry counter here)
+  setTimeout(() => { expoStarting = false; }, 8000);
 }
 
 // ── Request parsing ──
