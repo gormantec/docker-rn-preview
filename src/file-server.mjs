@@ -135,9 +135,13 @@ function switchProject(name) {
   console.log(`[file-server] Active project: "${currentProject}"${changed ? ' (changed)' : ' (unchanged)'}`);
 
   if (changed) {
-    // Restart Expo with new project
-    if (expoProcess) { expoProcess.kill('SIGKILL'); expoProcess = null; }
-    setTimeout(startExpo, 2000);
+    // Kill old Expo and restart with new project dir
+    if (expoProcess) {
+      try { expoProcess.kill('SIGTERM'); } catch {}
+      expoProcess = null;
+    }
+    // Wait for port to free, then restart
+    setTimeout(startExpo, 4000);
     // Re-watch package.json on new project
     try { watchFile(join(WORKSPACE, 'package.json'), watchPkgHandler); } catch {}
   }
@@ -155,10 +159,15 @@ function startExpo() {
   }
   expoStarting = true;
 
-  // Kill existing process group (Metro children included)
+  // Kill existing process — use SIGTERM first, then SIGKILL after a short wait
   if (expoProcess) {
-    try { process.kill(-expoProcess.pid, 'SIGKILL'); } catch {}
+    const old = expoProcess;
     expoProcess = null;
+    try { old.kill('SIGTERM'); } catch {}
+    // Force kill after 3s if still alive
+    setTimeout(() => {
+      try { old.kill('SIGKILL'); } catch {}
+    }, 3000);
   }
 
   console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
@@ -167,7 +176,7 @@ function startExpo() {
     stdio: 'inherit',
     env: {
       ...process.env,
-      CI: 'true',                    // Prevent watch mode prompts
+      // NO CI=true — let Metro watch files for live reloads
       EXPO_NO_PORT_PROMPT: '1',      // Prevent "Use port 19008?" prompt
       EXPO_NO_INTERACTIVE: '1',      // Extra guard against prompts
     },
