@@ -228,13 +228,20 @@ function parseBody(req) {
   });
 }
 
-// Eager body buffering for async handlers
+// Eager body buffering for async handlers — handles edge case where
+// data/end events fire before the async callback attaches listeners.
 function bufferBody(req) {
   return new Promise((resolve) => {
     if (req._body !== undefined) return resolve();
+    // If request already ended (tiny bodies arrive synchronously), use what we have
+    if (req.readableEnded || req.complete) {
+      req._body = '';
+      return resolve();
+    }
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => { req._body = Buffer.concat(chunks).toString(); resolve(); });
+    req.on('error', () => { req._body = ''; resolve(); });
   });
 }
 
