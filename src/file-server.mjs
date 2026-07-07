@@ -228,6 +228,16 @@ function parseBody(req) {
   });
 }
 
+// Eager body buffering for async handlers
+function bufferBody(req) {
+  return new Promise((resolve) => {
+    if (req._body !== undefined) return resolve();
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => { req._body = Buffer.concat(chunks).toString(); resolve(); });
+  });
+}
+
 function json(res, data, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
@@ -235,6 +245,7 @@ function json(res, data, status = 200) {
 
 // ── Server ──
 const server = createServer(async (req, res) => {
+  await bufferBody(req);
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const method = req.method.toUpperCase();
 
@@ -546,6 +557,8 @@ async function handleApiInProxy(req, res) {
 }
 
 const proxyServer = createServer(async (req, res) => {
+  // Buffer body eagerly before async handling
+  await bufferBody(req);
   // Try API handler first
   const handled = await handleApiInProxy(req, res);
   if (handled) return;
