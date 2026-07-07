@@ -250,12 +250,26 @@ function json(res, data, status = 200) {
 }
 
 // ── Server ──
-const server = createServer(async (req, res) => {
-  await bufferBody(req);
+const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const method = req.method.toUpperCase();
 
-  try {
+  // Sync body collection — avoids event race with pause/resume on ended streams
+  let rawBody = '';
+  const bodyReady = method === 'GET' || method === 'HEAD' || method === 'DELETE'
+    ? Promise.resolve('')
+    : new Promise((resolve) => {
+        req.on('data', c => rawBody += c);
+        req.on('end', () => resolve(rawBody));
+        req.on('error', () => resolve(''));
+      });
+
+  bodyReady.then(() => {
+    let body = {};
+    try { if (rawBody) body = JSON.parse(rawBody); } catch {}
+    req._body = rawBody;
+
+    try {
     // ── Health ──
     if (method === 'GET' && url.pathname === '/api/health') {
       return json(res, { ok: true, project: currentProject, workspace: WORKSPACE, version: fileVersion });
@@ -267,7 +281,6 @@ const server = createServer(async (req, res) => {
     }
 
     if (method === 'POST' && url.pathname === '/api/projects/switch') {
-      const body = await parseBody(req);
       const { name } = body;
       if (!name) return json(res, { error: 'name required' }, 400);
       // Respond immediately; heavy work (npm/node_modules copy) happens async
@@ -303,7 +316,6 @@ const server = createServer(async (req, res) => {
 
     // Write file
     if (method === 'POST' && url.pathname === '/api/files/write') {
-      const body = await parseBody(req);
       const { path: filePath, content, encoding } = body;
       if (!filePath || content === undefined) return json(res, { error: 'path and content required' }, 400);
       const fullPath = safePath(filePath);
@@ -332,7 +344,6 @@ const server = createServer(async (req, res) => {
 
     // ── Batch file write (multiple files in one request, one reload) ──
     if (method === 'POST' && url.pathname === '/api/files/write-batch') {
-      const body = await parseBody(req);
       const { files } = body;
       if (!files || !Array.isArray(files)) return json(res, { error: 'files array required' }, 400);
 
@@ -368,7 +379,6 @@ const server = createServer(async (req, res) => {
 
     // ── Expo stdin — send commands to Metro (r=reload, d=dev menu, etc.) ──
     if (method === 'POST' && url.pathname === '/api/expo/stdin') {
-      const body = await parseBody(req);
       const { input } = body;
       if (!input) return json(res, { error: 'input required (e.g., "r" for reload, "d" for dev menu)' }, 400);
       if (!expoProcess?.stdin?.writable) {
@@ -385,7 +395,6 @@ const server = createServer(async (req, res) => {
 
     // Create directory
     if (method === 'POST' && url.pathname === '/api/files/mkdir') {
-      const body = await parseBody(req);
       const { path: dirPath } = body;
       if (!dirPath) return json(res, { error: 'path required' }, 400);
       const fullPath = safePath(dirPath);
@@ -419,7 +428,6 @@ const server = createServer(async (req, res) => {
 
     // Execute a shell script in commands/ directory
     if (method === 'POST' && url.pathname === '/api/exec') {
-      const body = await parseBody(req);
       const { script } = body;
       if (!script) return json(res, { error: 'script filename required' }, 400);
       const scriptPath = safePath(`commands/${script}`);
