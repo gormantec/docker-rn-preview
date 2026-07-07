@@ -451,10 +451,10 @@ const server = createServer((req, res) => {
       return json(res, { logs: '' });
     }
 
-    json(res, { error: 'Not found' }, 404);
+    if (!res.writableEnded) json(res, { error: 'Not found' }, 404);
   } catch (err) {
     console.error('[file-server] Error:', err.message);
-    json(res, { error: err.message }, 500);
+    if (!res.writableEnded) json(res, { error: err.message }, 500);
   }
   });  // closes bodyReady.then()
 });    // closes createServer()
