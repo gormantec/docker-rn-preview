@@ -253,8 +253,12 @@ const server = createServer(async (req, res) => {
       const body = await parseBody(req);
       const { name } = body;
       if (!name) return json(res, { error: 'name required' }, 400);
-      const result = switchProject(name);
-      return json(res, { ok: true, ...result });
+      // Respond immediately; heavy work (npm/node_modules copy) happens async
+      const safeName = (name || 'my-project')
+        .replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'my-project';
+      json(res, { ok: true, project: safeName, switching: safeName !== currentProject });
+      // Do the actual switch in background
+      setImmediate(() => switchProject(safeName));
     }
 
     // List directory
@@ -355,10 +359,10 @@ const server = createServer(async (req, res) => {
       try {
         expoProcess.stdin.write(input + '\n');
         console.log(`[file-server] Sent to Expo stdin: "${input}"`);
-        return json(res, { ok: true, sent: input });
       } catch (err) {
         return json(res, { error: err.message }, 500);
       }
+      return json(res, { ok: true, sent: input });
     }
 
     // Create directory
