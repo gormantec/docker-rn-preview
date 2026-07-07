@@ -588,7 +588,17 @@ const proxyServer = createServer((req, res) => {
       proxyRes.on('data', (chunk) => { body += chunk.toString(); });
       proxyRes.on('end', () => {
         if (isHtml) {
-          body = body.replace('<head>', `<head><base href="${basePath}/">`);
+          // Inject base tag + auto-reload polling script
+          body = body.replace('<head>', `<head><base href="${basePath}/">
+<script>
+let __version = 0;
+setInterval(function(){
+  fetch('${basePath}/api/health').then(r=>r.json()).then(d=>{
+    if(d.version && __version===0) __version=d.version;
+    if(d.version && d.version!==__version){ console.log('[auto-reload] v'+__version+'→v'+d.version); location.reload(); }
+  }).catch(()=>{});
+}, 2000);
+</script>`);
           body = body.replace(/(src|href)=["']\/((?!(?:webapp|cdn|http|\/\/))[^"']*)["']/g,
             (m, attr, path) => `${attr}="${basePath}/${path}"`);
         }
@@ -616,18 +626,26 @@ proxyServer.listen(PREVIEW_PORT, () => {
 
 // ── WebSocket upgrade proxying (for Metro HMR live reload) ──
 proxyServer.on('upgrade', (req, socket, head) => {
-  const wsProxy = http.request({
+  console.log(`[file-server] WebSocket upgrade: ${req.url}`);
+  const options = {
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
-    path: req.url, method: req.method, headers: req.headers,
-  });
-  wsProxy.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
-    socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
-      Object.entries(proxyRes.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
-      '\r\n\r\n');
+    path: req.url, method: 'GET',
+    headers: { ...req.headers, connection: 'Upgrade', upgrade: req.headers.upgrade },
+  };
+  const wsProxy = http.request(options);
+  wsProxy.on('upgrade', (proxyRes, proxySocket) => {
+    const headers = [
+      'HTTP/1.1 101 Switching Protocols',
+      `Upgrade: ${proxyRes.headers.upgrade || 'websocket'}`,
+      `Connection: ${proxyRes.headers.connection || 'Upgrade'}`,
+    ];
+    if (proxyRes.headers['sec-websocket-accept']) {
+      headers.push(`Sec-WebSocket-Accept: ${proxyRes.headers['sec-websocket-accept']}`);
+    }
+    socket.write(headers.join('\r\n') + '\r\n\r\n');
     proxySocket.pipe(socket);
     socket.pipe(proxySocket);
-    if (proxyHead.length) proxySocket.write(proxyHead);
   });
-  wsProxy.on('error', () => { socket.destroy(); });
+  wsProxy.on('error', (e) => { console.error('[file-server] WS proxy error:', e.message); socket.destroy(); });
   wsProxy.end();
 });
