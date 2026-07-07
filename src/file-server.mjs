@@ -171,16 +171,31 @@ function startExpo() {
   }
 
   console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
+  // Pipe all stdio so we can send reload/commands via stdin
   expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', String(EXPO_INTERNAL_PORT)], {
     cwd: WORKSPACE,
-    stdio: 'inherit',
+    stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
       // NO CI=true — let Metro watch files for live reloads
-      EXPO_NO_PORT_PROMPT: '1',      // Prevent "Use port 19008?" prompt
-      EXPO_NO_INTERACTIVE: '1',      // Extra guard against prompts
+      EXPO_NO_PORT_PROMPT: '1',
+      EXPO_NO_INTERACTIVE: '1',
     },
   });
+
+  // Pipe stdout to console
+  if (expoProcess.stdout) {
+    expoProcess.stdout.on('data', (data) => {
+      process.stdout.write(data);
+    });
+  }
+  // Pipe stderr to console
+  if (expoProcess.stderr) {
+    expoProcess.stderr.on('data', (data) => {
+      process.stderr.write(data);
+    });
+  }
+
   expoProcess.on('exit', (code) => {
     console.log(`[file-server] Expo exited with code ${code}.`);
     expoProcess = null;
@@ -274,7 +289,30 @@ const server = createServer(async (req, res) => {
       const dir = dirname(fullPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       writeFileSync(fullPath, content);
+
+      // Auto-reload Metro after file writes (send "r" to Expo stdin)
+      if (expoProcess?.stdin?.writable) {
+        try { expoProcess.stdin.write('r\n'); } catch {}
+      }
+
       return json(res, { ok: true, path: filePath });
+    }
+
+    // ── Expo stdin — send commands to Metro (r=reload, d=dev menu, etc.) ──
+    if (method === 'POST' && url.pathname === '/api/expo/stdin') {
+      const body = await parseBody(req);
+      const { input } = body;
+      if (!input) return json(res, { error: 'input required (e.g., "r" for reload, "d" for dev menu)' }, 400);
+      if (!expoProcess?.stdin?.writable) {
+        return json(res, { error: 'Expo not running or stdin not available' }, 503);
+      }
+      try {
+        expoProcess.stdin.write(input + '\n');
+        console.log(`[file-server] Sent to Expo stdin: "${input}"`);
+        return json(res, { ok: true, sent: input });
+      } catch (err) {
+        return json(res, { error: err.message }, 500);
+      }
     }
 
     // Create directory
