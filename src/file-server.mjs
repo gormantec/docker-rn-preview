@@ -468,26 +468,89 @@ server.listen(PORT, () => {
 });
 
 // ── Reverse proxy on port 19006 → Expo on 19007 (rewrites absolute asset paths) ──
-// Also routes /api/* to the file API on port 9091
+// Also handles /api/* routes directly for ELB accessibility
 const userHash = process.env.PREVIEW_USER_HASH || 'default';
 const basePath = `/webapp/rn-pv-${userHash}`;
-const proxyServer = createServer((req, res) => {
-  // Route /api/* requests to the file API (port 9091) instead of Expo
-  const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
-  if (url.pathname.startsWith('/api/')) {
-    const apiReq = http.request({
-      hostname: 'localhost', port: PORT,
-      path: req.url, method: req.method, headers: req.headers,
-    }, (apiRes) => {
-      res.writeHead(apiRes.statusCode, apiRes.headers);
-      apiRes.pipe(res);
-    });
-    apiReq.on('error', () => { res.writeHead(502); res.end('File API not ready'); });
-    if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(apiReq);
-    else apiReq.end();
-    return;
-  }
 
+// Quick inline API handler for the proxy (avoids forwarding to 9091)
+async function handleApiInProxy(req, res) {
+  const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
+  const method = req.method.toUpperCase();
+  // Health
+  if (method === 'GET' && url.pathname === '/api/health') { json(res, { ok: true, project: currentProject, workspace: WORKSPACE }); return true; }
+  // Projects
+  if (method === 'GET' && url.pathname === '/api/projects/current') { json(res, { project: currentProject, path: WORKSPACE }); return true; }
+  if (method === 'POST' && url.pathname === '/api/projects/switch') {
+    const body = await parseBody(req);
+    const name = body.name;
+    if (!name) { json(res, { error: 'name required' }, 400); return true; }
+    const safeName = (name || 'my-project').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'my-project';
+    json(res, { ok: true, project: safeName, switching: safeName !== currentProject });
+    setImmediate(() => switchProject(safeName));
+    return true;
+  }
+  // File read
+  if (method === 'GET' && url.pathname === '/api/files/read') {
+    const fp = url.searchParams.get('path'); if (!fp) { json(res, { error: 'path required' }, 400); return true; }
+    const full = safePath(fp); if (!existsSync(full)) { json(res, { error: 'Not found' }, 404); return true; }
+    json(res, { content: readFileSync(full, 'utf-8'), path: fp }); return true;
+  }
+  // File list
+  if (method === 'GET' && url.pathname === '/api/files/list') {
+    const dir = url.searchParams.get('dir') || '.'; const full = safePath(dir);
+    if (!existsSync(full)) { json(res, { error: 'Not found' }, 404); return true; }
+    const entries = readdirSync(full).map(n => { const s = statSync(join(full, n)); return { name: n, type: s.isDirectory() ? 'dir' : 'file', size: s.size }; });
+    json(res, { entries }); return true;
+  }
+  // File write
+  if (method === 'POST' && url.pathname === '/api/files/write') {
+    const body = await parseBody(req);
+    const { path: fp, content, encoding } = body;
+    if (!fp || content === undefined) { json(res, { error: 'path and content required' }, 400); return true; }
+    const full = safePath(fp); const d = dirname(full); if (!existsSync(d)) mkdirSync(d, { recursive: true });
+    let decoded = content;
+    if (encoding === 'base64') { try { decoded = Buffer.from(content, 'base64').toString('utf-8'); } catch (e) { json(res, { error: 'base64 decode failed' }, 400); return true; } }
+    writeFileSync(full, decoded);
+    if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
+    json(res, { ok: true, path: fp, bytes: decoded.length }); return true;
+  }
+  // Batch write
+  if (method === 'POST' && url.pathname === '/api/files/write-batch') {
+    const body = await parseBody(req);
+    const { files } = body;
+    if (!files || !Array.isArray(files)) { json(res, { error: 'files array required' }, 400); return true; }
+    const results = [];
+    for (const f of files) {
+      try { const full = safePath(f.path); const d = dirname(full); if (!existsSync(d)) mkdirSync(d, { recursive: true }); let dec = f.content; if (f.encoding === 'base64') dec = Buffer.from(f.content, 'base64').toString('utf-8'); writeFileSync(full, dec); results.push({ path: f.path, ok: true, bytes: dec.length }); }
+      catch (e) { results.push({ path: f.path, error: e.message }); }
+    }
+    if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
+    json(res, { ok: true, results }); return true;
+  }
+  // Mkdir
+  if (method === 'POST' && url.pathname === '/api/files/mkdir') {
+    const body = await parseBody(req); const { path: dp } = body;
+    if (!dp) { json(res, { error: 'path required' }, 400); return true; }
+    const full = safePath(dp); if (!existsSync(full)) mkdirSync(full, { recursive: true });
+    json(res, { ok: true, path: dp }); return true;
+  }
+  // Expo stdin
+  if (method === 'POST' && url.pathname === '/api/expo/stdin') {
+    const body = await parseBody(req); const { input } = body;
+    if (!input) { json(res, { error: 'input required' }, 400); return true; }
+    if (!expoProcess?.stdin?.writable) { json(res, { error: 'Expo not running' }, 503); return true; }
+    try { expoProcess.stdin.write(input + '\n'); } catch (e) { json(res, { error: e.message }, 500); return true; }
+    json(res, { ok: true, sent: input }); return true;
+  }
+  return false; // not an API route — proxy to Expo
+}
+
+const proxyServer = createServer(async (req, res) => {
+  // Try API handler first
+  const handled = await handleApiInProxy(req, res);
+  if (handled) return;
+
+  const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
   const proxyReq = http.request({
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
     path: req.url, method: req.method, headers: req.headers,
