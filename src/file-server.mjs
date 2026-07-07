@@ -233,15 +233,13 @@ function parseBody(req) {
 function bufferBody(req) {
   return new Promise((resolve) => {
     if (req._body !== undefined) return resolve();
-    // If request already ended (tiny bodies arrive synchronously), use what we have
-    if (req.readableEnded || req.complete) {
-      req._body = '';
-      return resolve();
-    }
+    // Pause the stream to prevent data loss, then resume after listeners attached
+    req.pause();
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => { req._body = Buffer.concat(chunks).toString(); resolve(); });
     req.on('error', () => { req._body = ''; resolve(); });
+    req.resume();
   });
 }
 
