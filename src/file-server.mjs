@@ -32,6 +32,7 @@ const EXPO_INTERNAL_PORT = 19007;
 
 let currentProject = 'my-project';
 let WORKSPACE = join(WORKSPACE_BASE, currentProject);
+let fileVersion = 0;  // Increments on every file write — used for cache-busting
 
 // Ensure base exists
 if (!existsSync(WORKSPACE_BASE)) mkdirSync(WORKSPACE_BASE, { recursive: true });
@@ -257,7 +258,7 @@ const server = createServer(async (req, res) => {
   try {
     // ── Health ──
     if (method === 'GET' && url.pathname === '/api/health') {
-      return json(res, { ok: true, project: currentProject, workspace: WORKSPACE });
+      return json(res, { ok: true, project: currentProject, workspace: WORKSPACE, version: fileVersion });
     }
 
     // ── Project management ──
@@ -319,6 +320,7 @@ const server = createServer(async (req, res) => {
         }
       }
       writeFileSync(fullPath, decoded);
+      fileVersion++;
 
       // Auto-reload Metro after file writes (send "r" to Expo stdin)
       if (expoProcess?.stdin?.writable) {
