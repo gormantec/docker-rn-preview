@@ -488,16 +488,18 @@ server.listen(PORT, () => {
 const userHash = process.env.PREVIEW_USER_HASH || 'default';
 const basePath = `/webapp/rn-pv-${userHash}`;
 
-// Quick inline API handler for the proxy (avoids forwarding to 9091)
-async function handleApiInProxy(req, res) {
+// Simplified API handler — takes pre-buffered body
+function handleApiInProxySync(req, res, rawBody) {
   const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
   const method = req.method.toUpperCase();
+  let body = {};
+  try { body = JSON.parse(rawBody || '{}'); } catch {}
+
   // Health
   if (method === 'GET' && url.pathname === '/api/health') { json(res, { ok: true, project: currentProject, workspace: WORKSPACE }); return true; }
   // Projects
   if (method === 'GET' && url.pathname === '/api/projects/current') { json(res, { project: currentProject, path: WORKSPACE }); return true; }
   if (method === 'POST' && url.pathname === '/api/projects/switch') {
-    const body = await parseBody(req);
     const name = body.name;
     if (!name) { json(res, { error: 'name required' }, 400); return true; }
     const safeName = (name || 'my-project').replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'my-project';
@@ -520,7 +522,6 @@ async function handleApiInProxy(req, res) {
   }
   // File write
   if (method === 'POST' && url.pathname === '/api/files/write') {
-    const body = await parseBody(req);
     const { path: fp, content, encoding } = body;
     if (!fp || content === undefined) { json(res, { error: 'path and content required' }, 400); return true; }
     const full = safePath(fp); const d = dirname(full); if (!existsSync(d)) mkdirSync(d, { recursive: true });
@@ -532,7 +533,6 @@ async function handleApiInProxy(req, res) {
   }
   // Batch write
   if (method === 'POST' && url.pathname === '/api/files/write-batch') {
-    const body = await parseBody(req);
     const { files } = body;
     if (!files || !Array.isArray(files)) { json(res, { error: 'files array required' }, 400); return true; }
     const results = [];
@@ -545,28 +545,32 @@ async function handleApiInProxy(req, res) {
   }
   // Mkdir
   if (method === 'POST' && url.pathname === '/api/files/mkdir') {
-    const body = await parseBody(req); const { path: dp } = body;
+    const { path: dp } = body;
     if (!dp) { json(res, { error: 'path required' }, 400); return true; }
     const full = safePath(dp); if (!existsSync(full)) mkdirSync(full, { recursive: true });
     json(res, { ok: true, path: dp }); return true;
   }
   // Expo stdin
   if (method === 'POST' && url.pathname === '/api/expo/stdin') {
-    const body = await parseBody(req); const { input } = body;
+    const { input } = body;
     if (!input) { json(res, { error: 'input required' }, 400); return true; }
     if (!expoProcess?.stdin?.writable) { json(res, { error: 'Expo not running' }, 503); return true; }
     try { expoProcess.stdin.write(input + '\n'); } catch (e) { json(res, { error: e.message }, 500); return true; }
     json(res, { ok: true, sent: input }); return true;
   }
-  return false; // not an API route — proxy to Expo
+  return false;
 }
 
-const proxyServer = createServer(async (req, res) => {
-  // Buffer body eagerly before async handling
-  await bufferBody(req);
-  // Try API handler first
-  const handled = await handleApiInProxy(req, res);
-  if (handled) return;
+const proxyServer = createServer((req, res) => {
+  // Route /api/* — collect body synchronously, then handle
+  if (req.url.startsWith('/api/')) {
+    let rawBody = '';
+    req.on('data', c => rawBody += c);
+    req.on('end', () => {
+      handleApiInProxySync(req, res, rawBody);
+    });
+    return;
+  }
 
   const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
   const proxyReq = http.request({
