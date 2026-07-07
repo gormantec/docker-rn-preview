@@ -582,9 +582,12 @@ const proxyServer = createServer((req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
+  // Strip basePath before forwarding to Metro — it expects bare paths
+  let metroPath = req.url;
+  if (metroPath.startsWith(basePath + '/')) metroPath = metroPath.slice(basePath.length) || '/';
   const proxyReq = http.request({
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
-    path: req.url, method: req.method, headers: req.headers,
+    path: metroPath, method: req.method, headers: req.headers,
   }, (proxyRes) => {
     const ct = proxyRes.headers['content-type'] || '';
     const isHtml = ct.includes('text/html');
@@ -633,10 +636,13 @@ proxyServer.listen(PREVIEW_PORT, () => {
 
 // ── WebSocket upgrade proxying (for Metro HMR live reload) ──
 proxyServer.on('upgrade', (req, socket, head) => {
-  console.log(`[file-server] WebSocket upgrade: ${req.url}`);
+  // Strip basePath prefix — Metro expects bare paths like /hot, /ws
+  let wsPath = req.url;
+  if (wsPath.startsWith(basePath)) wsPath = wsPath.slice(basePath.length) || '/';
+  console.log(`[file-server] WebSocket upgrade: ${req.url} → ${wsPath}`);
   const options = {
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
-    path: req.url, method: 'GET',
+    path: wsPath, method: 'GET',
     headers: { ...req.headers, connection: 'Upgrade', upgrade: req.headers.upgrade },
   };
   const wsProxy = http.request(options);
