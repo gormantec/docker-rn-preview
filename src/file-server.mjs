@@ -283,19 +283,65 @@ const server = createServer(async (req, res) => {
     // Write file
     if (method === 'POST' && url.pathname === '/api/files/write') {
       const body = await parseBody(req);
-      const { path: filePath, content } = body;
+      const { path: filePath, content, encoding } = body;
       if (!filePath || content === undefined) return json(res, { error: 'path and content required' }, 400);
       const fullPath = safePath(filePath);
       const dir = dirname(fullPath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      writeFileSync(fullPath, content);
+
+      // Support base64-encoded content for binary/special-char safety
+      let decoded = content;
+      if (encoding === 'base64') {
+        try {
+          decoded = Buffer.from(content, 'base64').toString('utf-8');
+        } catch (err) {
+          return json(res, { error: `base64 decode failed: ${err.message}` }, 400);
+        }
+      }
+      writeFileSync(fullPath, decoded);
 
       // Auto-reload Metro after file writes (send "r" to Expo stdin)
       if (expoProcess?.stdin?.writable) {
         try { expoProcess.stdin.write('r\n'); } catch {}
       }
 
-      return json(res, { ok: true, path: filePath });
+      return json(res, { ok: true, path: filePath, bytes: decoded.length });
+    }
+
+    // ── Batch file write (multiple files in one request, one reload) ──
+    if (method === 'POST' && url.pathname === '/api/files/write-batch') {
+      const body = await parseBody(req);
+      const { files } = body;
+      if (!files || !Array.isArray(files)) return json(res, { error: 'files array required' }, 400);
+
+      const results = [];
+      for (const f of files) {
+        const { path: fp, content, encoding } = f;
+        if (!fp || content === undefined) {
+          results.push({ path: fp, error: 'path and content required' });
+          continue;
+        }
+        try {
+          const fullPath = safePath(fp);
+          const dir = dirname(fullPath);
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+          let decoded = content;
+          if (encoding === 'base64') {
+            decoded = Buffer.from(content, 'base64').toString('utf-8');
+          }
+          writeFileSync(fullPath, decoded);
+          results.push({ path: fp, ok: true, bytes: decoded.length });
+        } catch (err) {
+          results.push({ path: fp, error: err.message });
+        }
+      }
+
+      // One reload for the batch
+      if (expoProcess?.stdin?.writable) {
+        try { expoProcess.stdin.write('r\n'); } catch {}
+      }
+
+      return json(res, { ok: true, results });
     }
 
     // ── Expo stdin — send commands to Metro (r=reload, d=dev menu, etc.) ──
