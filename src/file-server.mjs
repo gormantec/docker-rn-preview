@@ -498,7 +498,7 @@ function handleApiInProxySync(req, res, rawBody) {
   try { body = JSON.parse(rawBody || '{}'); } catch {}
 
   // Health
-  if (method === 'GET' && url.pathname === '/api/health') { json(res, { ok: true, project: currentProject, workspace: WORKSPACE }); return true; }
+  if (method === 'GET' && url.pathname === '/api/health') { json(res, { ok: true, project: currentProject, workspace: WORKSPACE, version: fileVersion }); return true; }
   // Projects
   if (method === 'GET' && url.pathname === '/api/projects/current') { json(res, { project: currentProject, path: WORKSPACE }); return true; }
   if (method === 'POST' && url.pathname === '/api/projects/switch') {
