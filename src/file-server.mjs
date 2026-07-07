@@ -582,9 +582,12 @@ const proxyServer = createServer((req, res) => {
   }
 
   const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
+  // Strip basePath before forwarding to Metro (it expects bare paths)
+  let metroPath = req.url;
+  if (metroPath.startsWith(basePath)) metroPath = metroPath.slice(basePath.length) || '/';
   const proxyReq = http.request({
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
-    path: req.url, method: req.method, headers: req.headers,
+    path: metroPath, method: req.method, headers: req.headers,
   }, (proxyRes) => {
     const ct = proxyRes.headers['content-type'] || '';
     const isHtml = ct.includes('text/html');
