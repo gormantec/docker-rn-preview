@@ -611,3 +611,21 @@ const proxyServer = createServer((req, res) => {
 proxyServer.listen(PREVIEW_PORT, () => {
   console.log(`[file-server] Expo proxy listening on port ${PREVIEW_PORT} → ${EXPO_INTERNAL_PORT}`);
 });
+
+// ── WebSocket upgrade proxying (for Metro HMR live reload) ──
+proxyServer.on('upgrade', (req, socket, head) => {
+  const wsProxy = http.request({
+    hostname: 'localhost', port: EXPO_INTERNAL_PORT,
+    path: req.url, method: req.method, headers: req.headers,
+  });
+  wsProxy.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    socket.write('HTTP/1.1 101 Switching Protocols\r\n' +
+      Object.entries(proxyRes.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
+      '\r\n\r\n');
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+    if (proxyHead.length) proxySocket.write(proxyHead);
+  });
+  wsProxy.on('error', () => { socket.destroy(); });
+  wsProxy.end();
+});
