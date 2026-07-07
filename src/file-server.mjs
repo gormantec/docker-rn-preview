@@ -456,7 +456,8 @@ const server = createServer((req, res) => {
     console.error('[file-server] Error:', err.message);
     json(res, { error: err.message }, 500);
   }
-});
+  });  // closes bodyReady.then()
+});    // closes createServer()
 
 // ── Watch package.json for dependency changes ──
 let npmInstallRunning = false;
