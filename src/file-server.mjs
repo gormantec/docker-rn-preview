@@ -530,6 +530,7 @@ function handleApiInProxySync(req, res, rawBody) {
     let decoded = content;
     if (encoding === 'base64') { try { decoded = Buffer.from(content, 'base64').toString('utf-8'); } catch (e) { json(res, { error: 'base64 decode failed' }, 400); return true; } }
     writeFileSync(full, decoded);
+    fileVersion++;
     if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
     json(res, { ok: true, path: fp, bytes: decoded.length }); return true;
   }
@@ -543,6 +544,7 @@ function handleApiInProxySync(req, res, rawBody) {
       catch (e) { results.push({ path: f.path, error: e.message }); }
     }
     if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
+    fileVersion++;
     json(res, { ok: true, results }); return true;
   }
   // Mkdir
@@ -564,6 +566,11 @@ function handleApiInProxySync(req, res, rawBody) {
 }
 
 const proxyServer = createServer((req, res) => {
+  // WebSocket upgrade — handled by 'upgrade' event below, don't interfere
+  if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
+    return; // Let the upgrade event handle it
+  }
+
   // Route /api/* — collect body synchronously, then handle
   if (req.url.startsWith('/api/')) {
     let rawBody = '';
