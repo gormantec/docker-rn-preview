@@ -464,9 +464,26 @@ server.listen(PORT, () => {
 });
 
 // ── Reverse proxy on port 19006 → Expo on 19007 (rewrites absolute asset paths) ──
+// Also routes /api/* to the file API on port 9091
 const userHash = process.env.PREVIEW_USER_HASH || 'default';
 const basePath = `/webapp/rn-pv-${userHash}`;
 const proxyServer = createServer((req, res) => {
+  // Route /api/* requests to the file API (port 9091) instead of Expo
+  const url = new URL(req.url, `http://localhost:${PREVIEW_PORT}`);
+  if (url.pathname.startsWith('/api/')) {
+    const apiReq = http.request({
+      hostname: 'localhost', port: PORT,
+      path: req.url, method: req.method, headers: req.headers,
+    }, (apiRes) => {
+      res.writeHead(apiRes.statusCode, apiRes.headers);
+      apiRes.pipe(res);
+    });
+    apiReq.on('error', () => { res.writeHead(502); res.end('File API not ready'); });
+    if (req.method !== 'GET' && req.method !== 'HEAD') req.pipe(apiReq);
+    else apiReq.end();
+    return;
+  }
+
   const proxyReq = http.request({
     hostname: 'localhost', port: EXPO_INTERNAL_PORT,
     path: req.url, method: req.method, headers: req.headers,
