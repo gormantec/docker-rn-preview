@@ -29,6 +29,7 @@ const WORKSPACE_BASE = process.env.WORKSPACE_BASE || '/workspace';
 const TEMPLATE = '/workspace/my-project';  // Pre-built default from Dockerfile
 const PREVIEW_PORT = parseInt(process.env.PREVIEW_PORT || '19006', 10);
 const EXPO_INTERNAL_PORT = 19007;
+const EXPO_INTERACTIVE_WRAPPER = String(process.env.EXPO_INTERACTIVE_WRAPPER || '1') !== '0';
 
 let currentProject = 'my-project';
 let WORKSPACE = join(WORKSPACE_BASE, currentProject);
@@ -138,7 +139,7 @@ function switchProject(name) {
   if (changed) {
     // Kill old Expo and restart with new project dir
     if (expoProcess) {
-      try { expoProcess.kill('SIGTERM'); } catch {}
+      killExpoProcessTree(expoProcess);
       expoProcess = null;
     }
     // Wait for port to free, then restart
@@ -153,6 +154,39 @@ let expoProcess = null;
 let expoStarting = false;
 let expoRetries = 0;
 
+function sendExpoInput(input) {
+  if (!input) return false;
+  if (!expoProcess?.stdin?.writable) return false;
+  try {
+    expoProcess.stdin.write(String(input) + '\n');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function triggerExpoReload() {
+  return sendExpoInput('r');
+}
+
+function killExpoProcessTree(proc) {
+  if (!proc || !proc.pid) return;
+  try { process.kill(-proc.pid, 'SIGTERM'); } catch {}
+  try { process.kill(proc.pid, 'SIGTERM'); } catch {}
+  setTimeout(() => {
+    try { process.kill(-proc.pid, 'SIGKILL'); } catch {}
+    try { process.kill(proc.pid, 'SIGKILL'); } catch {}
+  }, 2500);
+}
+
+function freeExpoPorts() {
+  try {
+    execSync(`sh -lc "fuser -k ${EXPO_INTERNAL_PORT}/tcp >/dev/null 2>&1 || true"`, { stdio: 'pipe' });
+  } catch {
+    // best-effort
+  }
+}
+
 function startExpo() {
   if (expoStarting) {
     console.log('[file-server] Expo start already in progress, skipping.');
@@ -164,36 +198,62 @@ function startExpo() {
   if (expoProcess) {
     const old = expoProcess;
     expoProcess = null;
-    try { old.kill('SIGTERM'); } catch {}
-    // Force kill after 3s if still alive
-    setTimeout(() => {
-      try { old.kill('SIGKILL'); } catch {}
-    }, 3000);
+    killExpoProcessTree(old);
   }
 
-  console.log(`[file-server] Starting Expo in ${WORKSPACE}...`);
-  // Pipe all stdio so we can send reload/commands via stdin
-  expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', String(EXPO_INTERNAL_PORT)], {
-    cwd: WORKSPACE,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // NO CI=true — let Metro watch files for live reloads
-      EXPO_NO_PORT_PROMPT: '1',
-      EXPO_NO_INTERACTIVE: '1',
-    },
-  });
+  freeExpoPorts();
+
+  console.log(`[file-server] Starting Expo in ${WORKSPACE}... (interactive wrapper: ${EXPO_INTERACTIVE_WRAPPER ? 'on' : 'off'})`);
+  const startedAt = Date.now();
+  let sawPortPrompt = false;
+  // Keep stdin writable for live commands (r/d/etc). Wrapper can run under pseudo-tty via `script`.
+  if (EXPO_INTERACTIVE_WRAPPER) {
+    const cmd = `if command -v script >/dev/null 2>&1; then script -qec \"npx expo start --web --port ${EXPO_INTERNAL_PORT}\" /dev/null; else npx expo start --web --port ${EXPO_INTERNAL_PORT}; fi`;
+    expoProcess = spawn('sh', ['-lc', cmd], {
+      cwd: WORKSPACE,
+      detached: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        // Keep output deterministic; avoid color control chars in logs.
+        FORCE_COLOR: '0',
+      },
+    });
+  } else {
+    expoProcess = spawn('npx', ['expo', 'start', '--web', '--port', String(EXPO_INTERNAL_PORT), '--non-interactive'], {
+      cwd: WORKSPACE,
+      detached: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        EXPO_NO_PORT_PROMPT: '1',
+        EXPO_NO_INTERACTIVE: '1',
+        FORCE_COLOR: '0',
+      },
+    });
+  }
 
   // Pipe stdout to console
   if (expoProcess.stdout) {
     expoProcess.stdout.on('data', (data) => {
-      process.stdout.write(data);
+      const line = data.toString();
+      if (line.includes('Port 19007 is being used') || line.includes('Use port 19008 instead')) {
+        sawPortPrompt = true;
+        // In interactive mode explicitly decline alternate port, then recover with clean restart.
+        if (EXPO_INTERACTIVE_WRAPPER) sendExpoInput('n');
+      }
+      process.stdout.write(line);
     });
   }
   // Pipe stderr to console
   if (expoProcess.stderr) {
     expoProcess.stderr.on('data', (data) => {
-      process.stderr.write(data);
+      const line = data.toString();
+      if (line.includes('Port 19007 is being used') || line.includes('Use port 19008 instead')) {
+        sawPortPrompt = true;
+        if (EXPO_INTERACTIVE_WRAPPER) sendExpoInput('n');
+      }
+      process.stderr.write(line);
     });
   }
 
@@ -201,11 +261,13 @@ function startExpo() {
     console.log(`[file-server] Expo exited with code ${code}.`);
     expoProcess = null;
     expoStarting = false;
+    const aliveMs = Date.now() - startedAt;
+    const unexpectedEarlyExit = (code === 0 && aliveMs < 30000) || sawPortPrompt;
     // Retry on port conflicts or crashes (but cap retries)
-    if (code !== 0 && expoRetries < 3) {
+    if ((code !== 0 || unexpectedEarlyExit) && expoRetries < 5) {
       expoRetries++;
-      console.log(`[file-server] Expo restarting in 5s (retry ${expoRetries}/3)...`);
-      setTimeout(startExpo, 5000);
+      console.log(`[file-server] Expo restarting in 4s (retry ${expoRetries}/5)...`);
+      setTimeout(startExpo, 4000);
     } else if (code === 0) {
       expoRetries = 0;
     } else {
@@ -335,9 +397,7 @@ const server = createServer((req, res) => {
       fileVersion++;
 
       // Auto-reload Metro after file writes (send "r" to Expo stdin)
-      if (expoProcess?.stdin?.writable) {
-        try { expoProcess.stdin.write('r\n'); } catch {}
-      }
+      triggerExpoReload();
 
       return json(res, { ok: true, path: filePath, bytes: decoded.length });
     }
@@ -370,9 +430,7 @@ const server = createServer((req, res) => {
       }
 
       // One reload for the batch
-      if (expoProcess?.stdin?.writable) {
-        try { expoProcess.stdin.write('r\n'); } catch {}
-      }
+      triggerExpoReload();
 
       return json(res, { ok: true, results });
     }
@@ -384,12 +442,11 @@ const server = createServer((req, res) => {
       if (!expoProcess?.stdin?.writable) {
         return json(res, { error: 'Expo not running or stdin not available' }, 503);
       }
-      try {
-        expoProcess.stdin.write(input + '\n');
-        console.log(`[file-server] Sent to Expo stdin: "${input}"`);
-      } catch (err) {
-        return json(res, { error: err.message }, 500);
+      const ok = sendExpoInput(input);
+      if (!ok) {
+        return json(res, { error: 'Failed to send input to Expo process' }, 500);
       }
+      console.log(`[file-server] Sent to Expo stdin: "${input}"`);
       return json(res, { ok: true, sent: input });
     }
 
@@ -421,7 +478,10 @@ const server = createServer((req, res) => {
       } catch (err) {
         console.error('[file-server] npm install failed:', err.message);
       }
-      if (expoProcess) { expoProcess.kill(); expoProcess = null; }
+      if (expoProcess) {
+        killExpoProcessTree(expoProcess);
+        expoProcess = null;
+      }
       setTimeout(startExpo, 2000);
       return json(res, { ok: true, message: 'npm install + Expo restart triggered' });
     }
@@ -469,7 +529,10 @@ async function watchPkgHandler(curr, prev) {
   try {
     execSync('npm install --legacy-peer-deps', { cwd: WORKSPACE, stdio: 'pipe' });
     console.log('[file-server] npm install complete. Restarting Expo...');
-    if (expoProcess) { expoProcess.kill(); expoProcess = null; }
+    if (expoProcess) {
+      killExpoProcessTree(expoProcess);
+      expoProcess = null;
+    }
     setTimeout(startExpo, 2000);
   } catch (err) {
     console.error('[file-server] npm install failed:', err.message);
@@ -540,7 +603,7 @@ function handleApiInProxySync(req, res, rawBody) {
     if (encoding === 'base64') { try { decoded = Buffer.from(content, 'base64').toString('utf-8'); } catch (e) { json(res, { error: 'base64 decode failed' }, 400); return true; } }
     writeFileSync(full, decoded);
     fileVersion++;
-    if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
+    triggerExpoReload();
     json(res, { ok: true, path: fp, bytes: decoded.length }); return true;
   }
   // Batch write
@@ -552,7 +615,7 @@ function handleApiInProxySync(req, res, rawBody) {
       try { const full = safePath(f.path); const d = dirname(full); if (!existsSync(d)) mkdirSync(d, { recursive: true }); let dec = f.content; if (f.encoding === 'base64') dec = Buffer.from(f.content, 'base64').toString('utf-8'); writeFileSync(full, dec); results.push({ path: f.path, ok: true, bytes: dec.length }); }
       catch (e) { results.push({ path: f.path, error: e.message }); }
     }
-    if (expoProcess?.stdin?.writable) { try { expoProcess.stdin.write('r\n'); } catch {} }
+    triggerExpoReload();
     fileVersion++;
     json(res, { ok: true, results }); return true;
   }
@@ -568,7 +631,7 @@ function handleApiInProxySync(req, res, rawBody) {
     const { input } = body;
     if (!input) { json(res, { error: 'input required' }, 400); return true; }
     if (!expoProcess?.stdin?.writable) { json(res, { error: 'Expo not running' }, 503); return true; }
-    try { expoProcess.stdin.write(input + '\n'); } catch (e) { json(res, { error: e.message }, 500); return true; }
+    if (!sendExpoInput(input)) { json(res, { error: 'Failed to send input to Expo process' }, 500); return true; }
     json(res, { ok: true, sent: input }); return true;
   }
   return false;
